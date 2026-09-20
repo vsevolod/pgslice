@@ -13,7 +13,11 @@ module PgSlice
       assert_table(table)
 
       future = options[:future]
+      # TODO uncomment in 0.8.0
+      # abort "--future cannot be negative" if future < 0
       past = options[:past]
+      # TODO uncomment in 0.8.0
+      # abort "--past cannot be negative" if past < 0
       tablespace = options[:tablespace]
       range = (-1 * past)..future
 
@@ -27,7 +31,7 @@ module PgSlice
       queries = []
 
       if needs_comment
-        queries << "COMMENT ON TRIGGER #{quote_ident(trigger_name)} ON #{quote_table(table)} IS 'column:#{field},period:#{period},cast:#{cast}';"
+        queries << "COMMENT ON TRIGGER #{quote_ident(trigger_name)} ON #{quote_table(table)} IS #{quote("column:#{field},period:#{period},cast:#{cast}")};"
       end
 
       # today = utc date
@@ -63,14 +67,14 @@ module PgSlice
         added_partitions << partition
 
         if declarative
-          queries << <<-SQL
-CREATE TABLE #{quote_table(partition)} PARTITION OF #{quote_table(table)} FOR VALUES FROM (#{sql_date(day, cast, false)}) TO (#{sql_date(advance_date(day, period, 1), cast, false)})#{tablespace_str};
+          queries << <<~SQL
+            CREATE TABLE #{quote_table(partition)} PARTITION OF #{quote_table(table)} FOR VALUES FROM (#{sql_date(day, cast, false)}) TO (#{sql_date(advance_date(day, period, 1), cast, false)})#{tablespace_str};
           SQL
         else
-          queries << <<-SQL
-CREATE TABLE #{quote_table(partition)}
-    (CHECK (#{quote_ident(field)} >= #{sql_date(day, cast)} AND #{quote_ident(field)} < #{sql_date(advance_date(day, period, 1), cast)}))
-    INHERITS (#{quote_table(table)})#{tablespace_str};
+          queries << <<~SQL
+            CREATE TABLE #{quote_table(partition)}
+                (CHECK (#{quote_ident(field)} >= #{sql_date(day, cast)} AND #{quote_ident(field)} < #{sql_date(advance_date(day, period, 1), cast)}))
+                INHERITS (#{quote_table(table)})#{tablespace_str};
           SQL
         end
 
@@ -115,17 +119,17 @@ CREATE TABLE #{quote_table(partition)}
         trigger_defs = current_defs + future_defs + past_defs.reverse
 
         if trigger_defs.any?
-          queries << <<-SQL
-CREATE OR REPLACE FUNCTION #{quote_ident(trigger_name)}()
-    RETURNS trigger AS $$
-    BEGIN
-        IF #{trigger_defs.join("\n        ELSIF ")}
-        ELSE
-            RAISE EXCEPTION 'Date out of range. Ensure partitions are created.';
-        END IF;
-        RETURN NULL;
-    END;
-    $$ LANGUAGE plpgsql;
+          queries << <<~SQL
+            CREATE OR REPLACE FUNCTION #{quote_ident(trigger_name)}()
+                RETURNS trigger AS $$
+                BEGIN
+                    IF #{trigger_defs.join("\n        ELSIF ")}
+                    ELSE
+                        RAISE EXCEPTION 'Date out of range. Ensure partitions are created.';
+                    END IF;
+                    RETURN NULL;
+                END;
+                $$ LANGUAGE plpgsql;
           SQL
         end
       end

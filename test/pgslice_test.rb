@@ -2,15 +2,11 @@ require_relative "test_helper"
 
 class PgSliceTest < Minitest::Test
   def setup
-    $conn.exec File.read("test/support/schema.sql")
+    execute File.read("test/support/schema.sql")
   end
 
   def test_day
     assert_period "day"
-  end
-
-  def test_week
-    assert_period "week"
   end
 
   def test_month
@@ -37,9 +33,17 @@ class PgSliceTest < Minitest::Test
     run_command "fill Posts"
     assert_equal 10000, count("Posts_intermediate")
 
+    assert_analyzed "Posts_intermediate" do
+      run_command "analyze Posts"
+    end
+
     run_command "swap Posts"
     assert !table_exists?("Posts_intermediate")
     assert table_exists?("Posts_retired")
+
+    assert_analyzed "Posts" do
+      run_command "analyze Posts --swapped"
+    end
 
     run_command "unswap Posts"
     assert table_exists?("Posts_intermediate")
@@ -69,13 +73,84 @@ class PgSliceTest < Minitest::Test
     assert_period "month", trigger_based: true, tablespace: true
   end
 
+  def test_prep_missing_arguments
+    assert_error %!Usage: "pgslice prep TABLE COLUMN PERIOD"!, "prep Posts createdAt"
+  end
+
+  def test_prep_missing_table
+    assert_error "Table not found", "prep Items createdAt day"
+  end
+
+  def test_prep_missing_column
+    assert_error "Column not found", "prep Posts created day"
+  end
+
+  def test_prep_invalid_period
+    assert_error "Invalid period", "prep Posts createdAt decade"
+  end
+
+  def test_prep_no_partition_extra_arguments
+    assert_error %!Usage: "pgslice prep TABLE --no-partition"!, "prep Posts createdAt --no-partition"
+  end
+
+  def test_prep_no_partition_trigger_based
+    assert_error "Can't use --trigger-based and --no-partition", "prep Posts --no-partition --trigger-based"
+  end
+
+  def test_add_partitions_missing_table
+    assert_error "Table not found", "add_partitions Items"
+  end
+
+  def test_add_partitions_non_partitioned_table
+    assert_error "No settings found", "add_partitions Posts"
+  end
+
+  def test_add_partitions_missing_tablespace
+    run_command "prep Posts createdAt day"
+    assert_error %!tablespace "missing" does not exist!, "add_partitions Posts --intermediate --tablespace missing"
+  end
+
+  def test_add_partitions_negative_past
+    run_command "prep Posts createdAt day"
+    run_command "add_partitions Posts --intermediate --past -1"
+    # TODO raise error in 0.8.0
+    # assert_error "--past cannot be negative", "add_partitions Posts --intermediate --past -1"
+  end
+
+  def test_add_partitions_negative_future
+    run_command "prep Posts createdAt day"
+    run_command "add_partitions Posts --intermediate --future -1"
+    # TODO raise error in 0.8.0
+    # assert_error "--future cannot be negative", "add_partitions Posts --intermediate --future -1"
+  end
+
+  def test_fill_missing_table
+    assert_error "Table not found", "fill Items"
+  end
+
+  def test_analyze_missing_table
+    assert_error "Table not found", "analyze Items"
+  end
+
+  def test_swap_missing_table
+    assert_error "Table not found", "swap Items"
+  end
+
+  def test_unswap_missing_table
+    assert_error "Table not found", "unswap Items"
+  end
+
+  def test_unprep_missing_table
+    assert_error "Table not found", "unprep Items"
+  end
+
   private
 
   def assert_period(period, column: "createdAt", trigger_based: false, tablespace: false, version: nil)
-    $conn.exec('CREATE STATISTICS my_stats ON "Id", "UserId" FROM "Posts"')
+    execute %!CREATE STATISTICS my_stats ON "Id", "UserId" FROM "Posts"!
 
-    if server_version_num >= 120000 && !trigger_based
-      $conn.exec('ALTER TABLE "Posts" ADD COLUMN "Gen" INTEGER GENERATED ALWAYS AS ("Id" * 10) STORED')
+    if !trigger_based
+      execute %!ALTER TABLE "Posts" ADD COLUMN "Gen" INTEGER GENERATED ALWAYS AS ("Id" * 10) STORED!
     end
 
     run_command "prep Posts #{column} #{period} #{"--trigger-based" if trigger_based} #{"--test-version #{version}" if version}"
@@ -83,11 +158,10 @@ class PgSliceTest < Minitest::Test
 
     run_command "add_partitions Posts --intermediate --past 1 --future 1 #{"--tablespace pg_default" if tablespace}"
     now = Time.now.utc
-    time_format = case period
+    time_format =
+      case period
       when "day"
         "%Y%m%d"
-      when "week"
-        "%G%V"
       when "month"
         "%Y%m"
       else
@@ -117,9 +191,11 @@ class PgSliceTest < Minitest::Test
     assert_equal 10000, count("Posts_intermediate")
 
     # insert into old table
-    $conn.exec('INSERT INTO "Posts" ("' + column + '") VALUES (\'' + now.iso8601 + '\') RETURNING "Id"').first
+    execute %!INSERT INTO "Posts" (#{quote_ident(column)}) VALUES ($1) RETURNING "Id"!, [now.iso8601]
 
-    run_command "analyze Posts"
+    assert_analyzed "Posts%", 4 do
+      run_command "analyze Posts"
+    end
 
     # TODO check sequence ownership
     output = run_command "swap Posts"
@@ -133,11 +209,10 @@ class PgSliceTest < Minitest::Test
     assert_equal 10001, count("Posts")
 
     run_command "add_partitions Posts --future 3"
-    days = case period
+    days =
+      case period
       when "day"
         3
-      when "week"
-        3 * PgSlice::Helpers::DAYS_IN_WEEK
       when "month"
         90
       else
@@ -149,7 +224,7 @@ class PgSliceTest < Minitest::Test
     assert_foreign_key new_partition_name
 
     # test insert works
-    insert_result = $conn.exec('INSERT INTO "Posts" ("' + column + '") VALUES (\'' + now.iso8601 + '\') RETURNING "Id"').first
+    insert_result = execute(%!INSERT INTO "Posts" (#{quote_ident(column)}) VALUES ($1) RETURNING "Id"!, [now.iso8601]).first
     assert_equal 10002, count("Posts")
     if declarative
       assert insert_result["Id"]
@@ -160,13 +235,13 @@ class PgSliceTest < Minitest::Test
 
     # test insert with null field
     error = assert_raises(PG::ServerError) do
-      $conn.exec('INSERT INTO "Posts" ("UserId") VALUES (1)')
+      execute %!INSERT INTO "Posts" ("UserId") VALUES (1)!
     end
     assert_includes error.message, "partition"
 
     # test foreign key
     error = assert_raises(PG::ServerError) do
-      $conn.exec('INSERT INTO "Posts" ("' + column + '", "UserId") VALUES (NOW(), 1)')
+      execute %!INSERT INTO "Posts" (#{quote_ident(column)}, "UserId") VALUES (NOW(), 1)!
     end
     assert_includes error.message, "violates foreign key constraint"
 
@@ -176,10 +251,12 @@ class PgSliceTest < Minitest::Test
     assert_column partition_name, "updatedAt"
     assert_column new_partition_name, "updatedAt"
 
-    run_command "analyze Posts --swapped"
+    assert_analyzed "Posts%", 6 do
+      run_command "analyze Posts --swapped"
+    end
 
     # pg_stats_ext view available with Postgres 12+
-    assert_statistics "Posts" if server_version_num >= 120000 && !trigger_based
+    assert_statistics "Posts" if !trigger_based
 
     # TODO check sequence ownership
     run_command "unswap Posts"
@@ -196,57 +273,67 @@ class PgSliceTest < Minitest::Test
     refute table_exists?(new_partition_name)
   end
 
-  def run_command(command)
+  def assert_error(message, command)
+    run_command command, error: message
+  end
+
+  def run_command(command, error: nil)
     if verbose?
       puts "$ pgslice #{command}"
       puts
     end
     stdout, stderr = capture_io do
-      PgSlice::CLI.start("#{command} --url #{$url}".split(" "))
+      PgSlice::CLI.start("#{command} --url #{url}".split(" "))
     end
     if verbose?
       puts stdout
       puts
     end
-    assert_equal "", stderr
+    if error
+      assert_match error, stderr
+    else
+      assert_equal "", stderr
+    end
     stdout
   end
 
   def add_column(table, column)
-    $conn.exec("ALTER TABLE \"#{table}\" ADD COLUMN \"#{column}\" timestamp")
+    execute "ALTER TABLE #{quote_ident(table)} ADD COLUMN #{quote_ident(column)} timestamp"
   end
 
   def assert_column(table, column)
-    assert_includes $conn.exec("SELECT * FROM \"#{table}\" LIMIT 0").fields, column
+    assert_includes execute("SELECT * FROM #{quote_ident(table)} LIMIT 0").fields, column
   end
 
   def table_exists?(table_name)
-    result = $conn.exec <<~SQL
+    query = <<~SQL
       SELECT * FROM information_schema.tables
-      WHERE table_schema = 'public' AND table_name = '#{table_name}'
+      WHERE table_schema = 'public' AND table_name = $1
     SQL
+    result = execute(query, [table_name])
     result.any?
   end
 
   def count(table_name, only: false)
-    result = $conn.exec <<~SQL
-      SELECT COUNT(*) FROM #{only ? "ONLY " : ""}"#{table_name}"
+    result = execute <<~SQL
+      SELECT COUNT(*) FROM #{only ? "ONLY " : ""}#{quote_ident(table_name)}
     SQL
     result.first["count"].to_i
   end
 
   def primary_key(table_name)
-    result = $conn.exec <<~SQL
+    query = <<~SQL
       SELECT pg_get_constraintdef(oid) AS def
       FROM pg_constraint
-      WHERE contype = 'p' AND conrelid = '"#{table_name}"'::regclass
+      WHERE contype = 'p' AND conrelid = $1::regclass
     SQL
+    result = execute(query, [quote_ident(table_name)])
     result.first
   end
 
   def assert_primary_key(table_name)
     result = primary_key(table_name)
-    assert_match "PRIMARY KEY (\"Id\")", result["def"]
+    assert_match %!PRIMARY KEY ("Id")!, result["def"]
   end
 
   def refute_primary_key(table_name)
@@ -254,11 +341,12 @@ class PgSliceTest < Minitest::Test
   end
 
   def index(table_name)
-    result = $conn.exec <<~SQL
+    query = <<~SQL
       SELECT pg_get_indexdef(indexrelid)
       FROM pg_index
-      WHERE indrelid = '"#{table_name}"'::regclass AND indisprimary = 'f'
+      WHERE indrelid = $1::regclass AND indisprimary = 'f'
     SQL
+    result = execute(query, [quote_ident(table_name)])
     result.first
   end
 
@@ -271,29 +359,61 @@ class PgSliceTest < Minitest::Test
   end
 
   def assert_foreign_key(table_name)
-    result = $conn.exec <<~SQL
+    query = <<~SQL
       SELECT pg_get_constraintdef(oid) AS def
       FROM pg_constraint
-      WHERE contype = 'f' AND conrelid = '"#{table_name}"'::regclass
+      WHERE contype = 'f' AND conrelid = $1::regclass
     SQL
+    result = execute(query, [quote_ident(table_name)])
     assert !result.detect { |row| row["def"] =~ /\AFOREIGN KEY \(.*\) REFERENCES "Users"\("Id"\)\z/ }.nil?, "Missing foreign key on #{table_name}"
+  end
+
+  def assert_analyzed(table_pattern, expected = 1)
+    execute("SELECT pg_stat_reset()")
+    yield
+    last_analyzed = execute("SELECT relname, last_analyze FROM pg_stat_user_tables WHERE relname LIKE $1", [table_pattern])
+    # https://github.com/postgres/postgres/commit/375aed36ad83f0e021e9bdd3a0034c0c992c66dc
+    if server_version_num >= 150000
+      assert_equal expected, last_analyzed.count { |v| v["last_analyze"] }
+    end
   end
 
   # extended statistics are built on partitioned tables
   # https://github.com/postgres/postgres/commit/20b9fa308ebf7d4a26ac53804fce1c30f781d60c
   # (backported to Postgres 10)
   def assert_statistics(table_name)
-    result = $conn.exec <<~SQL
+    query = <<~SQL
       SELECT n_distinct
       FROM pg_stats_ext
-      WHERE tablename = '#{table_name}'
+      WHERE tablename = $1
     SQL
+    result = execute(query, [table_name])
     assert result.any?, "Missing extended statistics on #{table_name}"
-    assert_equal '{"1, 2": 10002}', result.first["n_distinct"]
+    assert_equal %!{"1, 2": 10002}!, result.first["n_distinct"]
   end
 
   def server_version_num
-    $conn.exec("SHOW server_version_num").first["server_version_num"].to_i
+    execute("SHOW server_version_num").first["server_version_num"].to_i
+  end
+
+  def url
+    @url ||= ENV["PGSLICE_URL"] || "postgres:///pgslice_test"
+  end
+
+  def connection
+    @connection ||= PG::Connection.new(url)
+  end
+
+  def execute(query, params = [])
+    if params.any?
+      connection.exec_params(query, params)
+    else
+      connection.exec(query)
+    end
+  end
+
+  def quote_ident(value)
+    PG::Connection.quote_ident(value)
   end
 
   def verbose?

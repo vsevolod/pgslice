@@ -4,7 +4,7 @@ Postgres partitioning as easy as pie. Works great for both new and existing tabl
 
 :tangerine: Battle-tested at [Instacart](https://www.instacart.com/opensource)
 
-[![Build Status](https://github.com/ankane/pgslice/workflows/build/badge.svg?branch=master)](https://github.com/ankane/pgslice/actions)
+[![Build Status](https://github.com/ankane/pgslice/actions/workflows/build.yml/badge.svg)](https://github.com/ankane/pgslice/actions)
 
 ## Install
 
@@ -14,7 +14,9 @@ pgslice is a command line tool. To install, run:
 gem install pgslice
 ```
 
-This will give you the `pgslice` command. You can also install it with [Homebrew](#homebrew) or [Docker](#docker). If installation fails, you may need to install [dependencies](#dependencies).
+This will give you the `pgslice` command. If installation fails, you may need to install [dependencies](#dependencies).
+
+You can also install it with [Homebrew](#homebrew) or [Docker](#docker).
 
 ## Steps
 
@@ -92,11 +94,11 @@ pgslice prep visits created_at month
 ```sql
 BEGIN;
 
-CREATE TABLE "public"."visits_intermediate" (LIKE "public"."visits" INCLUDING DEFAULTS INCLUDING CONSTRAINTS INCLUDING STORAGE INCLUDING COMMENTS) PARTITION BY RANGE ("created_at");
+CREATE TABLE "public"."visits_intermediate" (LIKE "public"."visits" INCLUDING DEFAULTS INCLUDING CONSTRAINTS INCLUDING STORAGE INCLUDING COMMENTS INCLUDING STATISTICS INCLUDING GENERATED INCLUDING COMPRESSION) PARTITION BY RANGE ("created_at");
 
 CREATE INDEX ON "public"."visits_intermediate" USING btree ("created_at");
 
-COMMENT ON TABLE "public"."visits_intermediate" is 'column:createdAt,period:day,cast:date,version:3';
+COMMENT ON TABLE "public"."visits_intermediate" is 'column:created_at,period:month,cast:date,version:3';
 
 COMMIT;
 ```
@@ -108,17 +110,17 @@ pgslice add_partitions visits --intermediate --past 1 --future 1
 ```sql
 BEGIN;
 
-CREATE TABLE "public"."visits_202208" PARTITION OF "public"."visits_intermediate" FOR VALUES FROM ('2022-08-01') TO ('2022-09-01');
+CREATE TABLE "public"."visits_202601" PARTITION OF "public"."visits_intermediate" FOR VALUES FROM ('2026-01-01') TO ('2026-02-01');
 
-ALTER TABLE "public"."visits_202208" ADD PRIMARY KEY ("id");
+ALTER TABLE "public"."visits_202601" ADD PRIMARY KEY ("id");
 
-CREATE TABLE "public"."visits_202209" PARTITION OF "public"."visits_intermediate" FOR VALUES FROM ('2022-09-01') TO ('2022-10-01');
+CREATE TABLE "public"."visits_202602" PARTITION OF "public"."visits_intermediate" FOR VALUES FROM ('2026-02-01') TO ('2026-03-01');
 
-ALTER TABLE "public"."visits_202209" ADD PRIMARY KEY ("id");
+ALTER TABLE "public"."visits_202602" ADD PRIMARY KEY ("id");
 
-CREATE TABLE "public"."visits_202210" PARTITION OF "public"."visits_intermediate" FOR VALUES FROM ('2022-10-01') TO ('2022-11-01');
+CREATE TABLE "public"."visits_202603" PARTITION OF "public"."visits_intermediate" FOR VALUES FROM ('2026-03-01') TO ('2026-04-01');
 
-ALTER TABLE "public"."visits_202210" ADD PRIMARY KEY ("id");
+ALTER TABLE "public"."visits_202603" ADD PRIMARY KEY ("id");
 
 COMMIT;
 ```
@@ -131,17 +133,17 @@ pgslice fill visits
 /* 1 of 3 */
 INSERT INTO "public"."visits_intermediate" ("id", "user_id", "ip", "created_at")
     SELECT "id", "user_id", "ip", "created_at" FROM "public"."visits"
-    WHERE "id" > 0 AND "id" <= 10000 AND "created_at" >= '2022-08-01'::date AND "created_at" < '2022-11-01'::date
+    WHERE "id" > 0 AND "id" <= 10000 AND "created_at" >= '2026-01-01'::date AND "created_at" < '2026-04-01'::date
 
 /* 2 of 3 */
 INSERT INTO "public"."visits_intermediate" ("id", "user_id", "ip", "created_at")
     SELECT "id", "user_id", "ip", "created_at" FROM "public"."visits"
-    WHERE "id" > 10000 AND "id" <= 20000 AND "created_at" >= '2022-08-01'::date AND "created_at" < '2022-11-01'::date
+    WHERE "id" > 10000 AND "id" <= 20000 AND "created_at" >= '2026-01-01'::date AND "created_at" < '2026-04-01'::date
 
 /* 3 of 3 */
 INSERT INTO "public"."visits_intermediate" ("id", "user_id", "ip", "created_at")
     SELECT "id", "user_id", "ip", "created_at" FROM "public"."visits"
-    WHERE "id" > 20000 AND "id" <= 30000 AND "created_at" >= '2022-08-01'::date AND "created_at" < '2022-11-01'::date
+    WHERE "id" > 20000 AND "id" <= 30000 AND "created_at" >= '2026-01-01'::date AND "created_at" < '2026-04-01'::date
 ```
 
 ```sh
@@ -149,11 +151,11 @@ pgslice analyze visits
 ```
 
 ```sql
-ANALYZE VERBOSE "public"."visits_202208";
+ANALYZE VERBOSE "public"."visits_202601";
 
-ANALYZE VERBOSE "public"."visits_202209";
+ANALYZE VERBOSE "public"."visits_202602";
 
-ANALYZE VERBOSE "public"."visits_202210";
+ANALYZE VERBOSE "public"."visits_202603";
 
 ANALYZE VERBOSE "public"."visits_intermediate";
 ```
@@ -217,14 +219,14 @@ WHERE
 Back up and drop older partitions each day, month, or year.
 
 ```sh
-pg_dump -c -Fc -t <table>_202209 $PGSLICE_URL > <table>_202209.dump
-psql -c "DROP TABLE <table>_202209" $PGSLICE_URL
+pg_dump -c -Fc -t <table>_202601 $PGSLICE_URL > <table>_202601.dump
+psql -c "DROP TABLE <table>_202601" $PGSLICE_URL
 ```
 
 If you use [Amazon S3](https://aws.amazon.com/s3/) for backups, [s3cmd](https://github.com/s3tools/s3cmd) is a nice tool.
 
 ```sh
-s3cmd put <table>_202209.dump s3://<s3-bucket>/<table>_202209.dump
+s3cmd put <table>_202601.dump s3://<s3-bucket>/<table>_202601.dump
 ```
 
 ## Schema Updates
@@ -267,7 +269,7 @@ SELECT * FROM
 WHERE
     user_id = 123 AND
     -- for performance
-    created_at >= '2022-09-01' AND created_at < '2022-09-02'
+    created_at >= '2026-01-01' AND created_at < '2026-01-02'
 ```
 
 For this to be effective, ensure `constraint_exclusion` is set to `partition` (the default value) or `on`.
@@ -299,12 +301,14 @@ You can also use pgslice to reduce the size of a table without partitioning by c
 ```sh
 pgslice prep <table> --no-partition
 pgslice fill <table> --where "id > 1000" # use any conditions
+pgslice analyze <table>
 pgslice swap <table>
+pgslice fill <table> --where "id > 1000" --swapped
 ```
 
 ## Triggers
 
-Triggers aren’t copied from the original table. You can set up triggers on the intermediate table if needed. Note that Postgres doesn’t support `BEFORE / FOR EACH ROW` triggers on partitioned tables.
+Triggers aren’t copied from the original table. You can set up triggers on the intermediate table if needed.
 
 ## Data Protection
 
@@ -317,7 +321,7 @@ Always make sure your [connection is secure](https://ankane.org/postgres-sslmode
 With Homebrew, you can use:
 
 ```sh
-brew install ankane/brew/pgslice
+brew install pgslice
 ```
 
 ### Docker
@@ -374,6 +378,10 @@ Also check out:
 - [PgHero](https://github.com/ankane/pghero) - A performance dashboard for Postgres
 - [pgsync](https://github.com/ankane/pgsync) - Sync Postgres data to your local machine
 
+## History
+
+View the [changelog](https://github.com/ankane/pgslice/blob/master/CHANGELOG.md)
+
 ## Contributing
 
 Everyone is encouraged to help improve this project. Here are a few ways you can help:
@@ -396,7 +404,7 @@ bundle exec rake test
 To test against different versions of Postgres with Docker, use:
 
 ```sh
-docker run -p=8000:5432 postgres:14
+docker run -p=8000:5432 postgres:16
 TZ=Etc/UTC PGSLICE_URL=postgres://postgres@localhost:8000/postgres bundle exec rake
 ```
 
