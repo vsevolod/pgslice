@@ -3,11 +3,8 @@ module PgSlice
     SQL_FORMAT = {
       day: "YYYYMMDD",
       month: "YYYYMM",
-      week: "YYYYWW",
       year: "YYYY"
-    }.freeze
-
-    DAYS_IN_WEEK = 7
+    }
 
     protected
 
@@ -44,8 +41,8 @@ module PgSlice
           say message
         end
         @server_version_num = conn.exec("SHOW server_version_num")[0]["server_version_num"].to_i
-        if @server_version_num < 110000
-          abort "This version of pgslice requires Postgres 11+"
+        if @server_version_num < 130000
+          abort "This version of pgslice requires Postgres 13+"
         end
         conn
       end
@@ -80,7 +77,7 @@ module PgSlice
         begin
           execute(query)
         rescue PG::ServerError => e
-          abort("#{e.class.name}: #{e.message}")
+          abort "#{e.class.name}: #{e.message}"
         end
       end
       log_sql
@@ -105,16 +102,23 @@ module PgSlice
       else
         fmt = "%Y-%m-%d"
       end
-      str = escape_literal(time.strftime(fmt))
-      add_cast ? "#{str}::#{cast}" : str
+      str = quote(time.strftime(fmt))
+      if add_cast
+        case cast
+        when "date", "timestamptz"
+          "#{str}::#{cast}"
+        else
+          abort "Invalid cast"
+        end
+      else
+        str
+      end
     end
 
     def name_format(period)
       case period.to_sym
       when :day
         "%Y%m%d"
-      when :week
-        "%G%V"
       when :month
         "%Y%m"
       else
@@ -131,9 +135,6 @@ module PgSlice
       case period.to_sym
       when :day
         date
-      when :week
-        now = Date.today
-        now - (now.wday - 1) % 7
       when :month
         Date.new(date.year, date.month)
       else
@@ -154,8 +155,6 @@ module PgSlice
       case period.to_sym
       when :day
         date.next_day(count)
-      when :week
-        date + (count * DAYS_IN_WEEK)
       when :month
         date.next_month(count)
       else
@@ -167,8 +166,12 @@ module PgSlice
       PG::Connection.quote_ident(value)
     end
 
-    def escape_literal(value)
-      connection.escape_literal(value)
+    def quote(value)
+      if value.is_a?(Numeric)
+        value
+      else
+        connection.escape_literal(value)
+      end
     end
 
     def quote_table(table)

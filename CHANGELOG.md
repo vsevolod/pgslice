@@ -1,5 +1,16 @@
-## 0.6.2 (2023-11-14)
-- Added support for weekly partition
+## 0.7.2 (2026-01-05)
+
+- Added support for Ruby 4.0
+
+## 0.7.1 (2025-07-27)
+
+- Fixed `analyze` analyzing partitions twice with declarative partitioning
+- Removed unnecessary query for `unprep` with declarative partitioning
+
+## 0.7.0 (2025-05-26)
+
+- Dropped support for Ruby < 3
+- Dropped support for Postgres < 13
 
 ## 0.6.1 (2023-04-26)
 

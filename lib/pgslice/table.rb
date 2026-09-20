@@ -12,16 +12,24 @@ module PgSlice
     end
 
     def exists?
-      execute("SELECT COUNT(*) FROM pg_catalog.pg_tables WHERE schemaname = $1 AND tablename = $2", [schema, name]).first["count"].to_i > 0
+      query = <<~SQL
+        SELECT COUNT(*) FROM pg_catalog.pg_tables
+        WHERE schemaname = $1 AND tablename = $2
+      SQL
+      execute(query, [schema, name]).first["count"].to_i > 0
     end
 
     def columns
-      execute("SELECT column_name FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2 AND is_generated = 'NEVER'", [schema, name]).map{ |r| r["column_name"] }
+      query = <<~SQL
+        SELECT column_name FROM information_schema.columns
+        WHERE table_schema = $1 AND table_name = $2 AND is_generated = 'NEVER'
+      SQL
+      execute(query, [schema, name]).map { |r| r["column_name"] }
     end
 
     # http://www.dbforums.com/showthread.php?1667561-How-to-list-sequences-and-the-columns-by-SQL
     def sequences
-      query = <<-SQL
+      query = <<~SQL
         SELECT
           a.attname AS related_column,
           n.nspname AS sequence_schema,
@@ -41,13 +49,17 @@ module PgSlice
     end
 
     def foreign_keys
-      execute("SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid = #{regclass} AND contype ='f'").map { |r| r["pg_get_constraintdef"] }
+      query = <<~SQL
+        SELECT pg_get_constraintdef(oid) FROM pg_constraint
+        WHERE conrelid = $1::regclass AND contype ='f'
+      SQL
+      execute(query, [quote_table]).map { |r| r["pg_get_constraintdef"] }
     end
 
     # https://stackoverflow.com/a/20537829
     # TODO can simplify with array_position in Postgres 9.5+
     def primary_key
-      query = <<-SQL
+      query = <<~SQL
         SELECT
           pg_attribute.attname,
           format_type(pg_attribute.atttypid, pg_attribute.atttypmod),
@@ -69,7 +81,11 @@ module PgSlice
     end
 
     def index_defs
-      execute("SELECT pg_get_indexdef(indexrelid) FROM pg_index WHERE indrelid = #{regclass} AND indisprimary = 'f'").map { |r| r["pg_get_indexdef"] }
+      query = <<~SQL
+        SELECT pg_get_indexdef(indexrelid) FROM pg_index
+        WHERE indrelid = $1::regclass AND indisprimary = 'f'
+      SQL
+      execute(query, [quote_table]).map { |r| r["pg_get_indexdef"] }
     end
 
     def quote_table
@@ -89,17 +105,25 @@ module PgSlice
     end
 
     def column_cast(column)
-      data_type = execute("SELECT data_type FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2 AND column_name = $3", [schema, name, column])[0]["data_type"]
+      query = <<~SQL
+        SELECT data_type FROM information_schema.columns
+        WHERE table_schema = $1 AND table_name = $2 AND column_name = $3
+      SQL
+      data_type = execute(query, [schema, name, column])[0]["data_type"]
       data_type == "timestamp with time zone" ? "timestamptz" : "date"
     end
 
     def max_id(primary_key, below: nil, where: nil)
       query = "SELECT MAX(#{quote_ident(primary_key)}) FROM #{quote_table}"
       conditions = []
-      conditions << "#{quote_ident(primary_key)} <= #{below}" if below
+      params = []
+      if below
+        conditions << "#{quote_ident(primary_key)} <= $1"
+        params << below
+      end
       conditions << where if where
       query << " WHERE #{conditions.join(" AND ")}" if conditions.any?
-      execute(query)[0]["max"].to_i
+      execute(query, params)[0]["max"].to_i
     end
 
     def min_id(primary_key, column, cast, starting_time, where)
@@ -113,15 +137,15 @@ module PgSlice
 
     # ensure this returns partitions in the correct order
     def partitions
-      query = <<-SQL
+      query = <<~SQL
         SELECT
-          nmsp_child.nspname  AS schema,
-          child.relname       AS name
+          nmsp_child.nspname AS schema,
+          child.relname AS name
         FROM pg_inherits
-          JOIN pg_class parent            ON pg_inherits.inhparent = parent.oid
-          JOIN pg_class child             ON pg_inherits.inhrelid   = child.oid
-          JOIN pg_namespace nmsp_parent   ON nmsp_parent.oid  = parent.relnamespace
-          JOIN pg_namespace nmsp_child    ON nmsp_child.oid   = child.relnamespace
+          JOIN pg_class parent ON pg_inherits.inhparent = parent.oid
+          JOIN pg_class child ON pg_inherits.inhrelid = child.oid
+          JOIN pg_namespace nmsp_parent ON nmsp_parent.oid = parent.relnamespace
+          JOIN pg_namespace nmsp_child ON nmsp_child.oid = child.relnamespace
         WHERE
           nmsp_parent.nspname = $1 AND
           parent.relname = $2
@@ -131,14 +155,17 @@ module PgSlice
     end
 
     def fetch_comment
-      execute("SELECT obj_description(#{regclass}) AS comment")[0]
+      execute("SELECT obj_description($1::regclass) AS comment", [quote_table])[0]
     end
 
     def fetch_trigger(trigger_name)
-      execute("SELECT obj_description(oid, 'pg_trigger') AS comment FROM pg_trigger WHERE tgname = $1 AND tgrelid = #{regclass}", [trigger_name])[0]
+      query = <<~SQL
+        SELECT obj_description(oid, 'pg_trigger') AS comment FROM pg_trigger
+        WHERE tgname = $1 AND tgrelid = $2::regclass
+      SQL
+      execute(query, [trigger_name, quote_table])[0]
     end
 
-    # legacy
     def fetch_settings(trigger_name)
       needs_comment = false
       trigger_comment = fetch_trigger(trigger_name)
@@ -166,6 +193,10 @@ module PgSlice
         needs_comment = true
       end
 
+      unless ["date", "timestamptz"].include?(cast)
+        abort "Invalid cast"
+      end
+
       version ||= trigger_comment ? 1 : 2
       declarative = version > 1
 
@@ -174,30 +205,24 @@ module PgSlice
 
     protected
 
+    def abort(message)
+      PgSlice::CLI.instance.send(:abort, message)
+    end
+
     def execute(*args)
       PgSlice::CLI.instance.send(:execute, *args)
     end
 
-    def escape_literal(value)
-      PgSlice::CLI.instance.send(:escape_literal, value)
+    def quote(value)
+      PgSlice::CLI.instance.send(:quote, value)
     end
 
     def quote_ident(value)
-      PG::Connection.quote_ident(value)
+      PgSlice::CLI.instance.send(:quote_ident, value)
     end
 
-    def regclass
-      "#{escape_literal(quote_table)}::regclass"
-    end
-
-    def sql_date(time, cast, add_cast = true)
-      if cast == "timestamptz"
-        fmt = "%Y-%m-%d %H:%M:%S UTC"
-      else
-        fmt = "%Y-%m-%d"
-      end
-      str = escape_literal(time.strftime(fmt))
-      add_cast ? "#{str}::#{cast}" : str
+    def sql_date(*args)
+      PgSlice::CLI.instance.send(:sql_date, *args)
     end
   end
 end
