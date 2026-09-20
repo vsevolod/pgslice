@@ -1,3 +1,7 @@
+## 0.7.3 (2026-09-20)
+
+- Updated to upstream 0.7.2 with weekly partition support
+
 ## 0.7.2 (2026-01-05)
 
 - Added support for Ruby 4.0
