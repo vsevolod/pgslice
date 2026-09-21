@@ -1,13 +1,31 @@
 name: build
-on: [push, pull_request]
+on:
+  workflow_dispatch:
+  workflow_call:
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: eks-hosted-small
+    container:
+      image: ruby:${{ matrix.ruby }}
+    env:
+      PGSLICE_URL: postgres://postgres:postgres@postgres:5432/pgslice_test
+    services:
+      postgres:
+        image: postgres:${{ matrix.postgres }}
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: pgslice_test
+        options: >-
+          --health-cmd "pg_isready -U postgres -d pgslice_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 6
     strategy:
       fail-fast: false
       matrix:
         include:
-          - ruby: "4.0"
+          - ruby: "4.0.6"
             postgres: 18
           - ruby: 3.4
             postgres: 17
@@ -20,13 +38,21 @@ jobs:
           - ruby: "3.0"
             postgres: 13
     steps:
-      - uses: actions/checkout@v5
-      - uses: ruby/setup-ruby@v1
-        with:
-          ruby-version: ${{ matrix.ruby }}
-          bundler-cache: true
-      - uses: ankane/setup-postgres@v1
-        with:
-          postgres-version: ${{ matrix.postgres }}
-          database: pgslice_test
+      - uses: actions/checkout@v7
+      - run: bundle install
       - run: bundle exec rake test
+
+  package:
+    name: Build gem
+    needs: build
+    runs-on: eks-hosted-small
+    container:
+      image: ruby:4.0.6
+    steps:
+      - uses: actions/checkout@v7
+      - run: gem build pgslice.gemspec
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pgslice-gem
+          path: pgslice-*.gem
+          if-no-files-found: error

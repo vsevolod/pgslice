@@ -1,0 +1,34 @@
+name: Releaser - Gem Release
+run-name: Gem release from ${{ github.ref_name }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_type:
+        description: 'Release mode'
+        type: choice
+        options:
+          - auto
+          - beta
+          - release
+        default: auto
+      approval_required:
+        description: 'Require Slack approval of the beta before a stable release'
+        type: boolean
+        default: true
+      strict_approval:
+        description: 'Fail the stable release if master content differs from the approved beta'
+        type: boolean
+        default: false
+
+jobs:
+  releaser:
+    uses: NetsoftHoldings/github-actions/.github/workflows/releaser-gem-release.yml@main
+    secrets: inherit
+    with:
+      version_file: lib/pgslice/version.rb
+      default_branch: master
+      publish_workflow_name: publish.yml
+      release_type: ${{ inputs.release_type }}
+      approval_required: ${{ inputs.approval_required }}
+      strict_approval: ${{ inputs.strict_approval }}

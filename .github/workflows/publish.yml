@@ -1,0 +1,65 @@
+name: Publish gem
+
+concurrency:
+  group: publish-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+on:
+  push:
+    tags:
+      - v*
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  tests-and-build:
+    uses: ./.github/workflows/build.yml
+    secrets: inherit
+
+  publish:
+    name: Publish
+    needs: [tests-and-build]
+    runs-on: eks-hosted-small
+    container:
+      image: ruby:4.0.6
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v7
+
+      - name: Download built gem
+        uses: actions/download-artifact@v8
+        with:
+          name: pgslice-gem
+          path: pkg
+
+      - name: Validate tag and gem version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          source_version=$(ruby -e 'require_relative "lib/pgslice/version"; puts PgSlice::VERSION')
+          gem_file=$(find pkg -maxdepth 1 -type f -name 'pgslice-*.gem' -print -quit)
+          test -n "$gem_file"
+          gem_version=$(ruby -e 'require "rubygems/package"; puts Gem::Package.new(ARGV.fetch(0)).spec.version' "$gem_file")
+
+          test "v$source_version" = "$GITHUB_REF_NAME"
+          test "$source_version" = "$gem_version"
+          echo "Publishing pgslice $gem_version from tag $GITHUB_REF_NAME"
+
+      - name: Publish gem to GitHub Packages
+        shell: bash
+        env:
+          GITHUB_PACKAGES_TOKEN: ${{ secrets.PACKAGES_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$GITHUB_PACKAGES_TOKEN"
+
+          trap 'rm -f ~/.gem/credentials' EXIT
+          mkdir -p ~/.gem
+          rm -f ~/.gem/credentials
+          ( umask 077 && printf -- "---\n:github: Bearer %s\n" "$GITHUB_PACKAGES_TOKEN" > ~/.gem/credentials )
+
+          gem_file=$(find pkg -maxdepth 1 -type f -name 'pgslice-*.gem' -print -quit)
+          gem push --key github --host https://rubygems.pkg.github.com/NetsoftHoldings "$gem_file"
